@@ -13,6 +13,7 @@ func main() {
 	router.GET("/home", func(ctx *gin.Context) {
 		ctx.String(200, "Hello Gin!")
 	})
+
 	httpSrv := http.NewServer(http.Address(":8000"))
 	httpSrv.HandlePrefix("/", router)
 
@@ -23,6 +24,6 @@ func main() {
 		),
 	)
 	if err := app.Run(); err != nil {
-		log.Println(err)
+		log.Fatal(err)
 	}
 }

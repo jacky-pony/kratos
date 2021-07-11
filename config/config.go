@@ -1,13 +1,18 @@
 package config
 
 import (
-	"encoding/json"
 	"errors"
 	"reflect"
 	"sync"
 	"time"
 
 	"github.com/go-kratos/kratos/v2/log"
+
+	// init encoding
+	_ "github.com/go-kratos/kratos/v2/encoding/json"
+	_ "github.com/go-kratos/kratos/v2/encoding/proto"
+	_ "github.com/go-kratos/kratos/v2/encoding/xml"
+	_ "github.com/go-kratos/kratos/v2/encoding/yaml"
 )
 
 var (
@@ -43,10 +48,9 @@ type config struct {
 // New new a config with options.
 func New(opts ...Option) Config {
 	options := options{
-		logger: log.DefaultLogger,
-		decoder: func(kv *KeyValue, v map[string]interface{}) error {
-			return json.Unmarshal(kv.Value, &v)
-		},
+		logger:   log.DefaultLogger,
+		decoder:  defaultDecoder,
+		resolver: defaultResolver,
 	}
 	for _, o := range opts {
 		o(&options)
@@ -54,7 +58,7 @@ func New(opts ...Option) Config {
 	return &config{
 		opts:   options,
 		reader: newReader(options),
-		log:    log.NewHelper("config", options.logger),
+		log:    log.NewHelper(options.logger),
 	}
 }
 

@@ -1,11 +1,12 @@
 package main
 
 import (
+	"context"
 	"flag"
-	"go.opentelemetry.io/otel/exporters/trace/jaeger"
-	"go.opentelemetry.io/otel/sdk/trace"
 	"os"
+	"time"
 
+	v1 "github.com/go-kratos/kratos/examples/blog/api/blog/v1"
 	"github.com/go-kratos/kratos/examples/blog/internal/conf"
 	"github.com/go-kratos/kratos/v2"
 	"github.com/go-kratos/kratos/v2/config"
@@ -13,7 +14,11 @@ import (
 	"github.com/go-kratos/kratos/v2/log"
 	"github.com/go-kratos/kratos/v2/transport/grpc"
 	"github.com/go-kratos/kratos/v2/transport/http"
-	"gopkg.in/yaml.v2"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/exporters/jaeger"
+	"go.opentelemetry.io/otel/sdk/resource"
+	tracesdk "go.opentelemetry.io/otel/sdk/trace"
+	semconv "go.opentelemetry.io/otel/semconv/v1.4.0"
 )
 
 // go build -ldflags "-X main.Version=x.y.z"
@@ -43,42 +48,63 @@ func newApp(logger log.Logger, hs *http.Server, gs *grpc.Server) *kratos.App {
 	)
 }
 
+func tracerProvider(url string) (*tracesdk.TracerProvider, error) {
+	// Create the Jaeger exporter
+	exp, err := jaeger.New(jaeger.WithCollectorEndpoint(jaeger.WithEndpoint(url)))
+	if err != nil {
+		return nil, err
+	}
+	tp := tracesdk.NewTracerProvider(
+		// Always be sure to batch in production.
+		tracesdk.WithBatcher(exp),
+		// Record information about this application in an Resource.
+		tracesdk.WithResource(resource.NewSchemaless(
+			semconv.ServiceNameKey.String(v1.BlogService_ServiceDesc.ServiceName),
+			attribute.String("environment", "development"),
+			attribute.Int64("ID", 1),
+		)),
+	)
+	return tp, nil
+}
+
 func main() {
 	flag.Parse()
 	logger := log.NewStdLogger(os.Stdout)
 
-	config := config.New(
+	cfg := config.New(
 		config.WithSource(
 			file.NewSource(flagconf),
 		),
-		config.WithDecoder(func(kv *config.KeyValue, v map[string]interface{}) error {
-			return yaml.Unmarshal(kv.Value, v)
-		}),
 	)
-	if err := config.Load(); err != nil {
+	if err := cfg.Load(); err != nil {
 		panic(err)
 	}
 
 	var bc conf.Bootstrap
-	if err := config.Scan(&bc); err != nil {
+	if err := cfg.Scan(&bc); err != nil {
 		panic(err)
 	}
-
-	tp, flush, err := jaeger.NewExportPipeline(jaeger.WithCollectorEndpoint("http://localhost:14268/api/traces"),
-		jaeger.WithProcess(jaeger.Process{
-			ServiceName: "blog",
-		}),
-		jaeger.WithSDK(&trace.Config{DefaultSampler: trace.AlwaysSample()}),
-	)
+	tp, err := tracerProvider(bc.Trace.Endpoint)
 	if err != nil {
 		panic(err)
 	}
-	defer flush()
 
-	app, err := initApp(bc.Server, bc.Data, tp, logger)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	defer func(ctx context.Context) {
+		// Do not make the application hang when it is shutdown.
+		ctx, cancel = context.WithTimeout(ctx, time.Second*5)
+		defer cancel()
+		if err := tp.Shutdown(ctx); err != nil {
+			panic(err)
+		}
+	}(ctx)
+
+	app, cleanup, err := initApp(bc.Server, bc.Data, tp, logger)
 	if err != nil {
 		panic(err)
 	}
+	defer cleanup()
 
 	// start and wait for stop signal
 	if err := app.Run(); err != nil {

@@ -1,26 +1,35 @@
 package base
 
 import (
+	"bytes"
 	"context"
-	"errors"
 	"os"
+	"os/exec"
 	"path"
 	"strings"
-
-	"github.com/go-git/go-git/v5"
 )
 
 // Repo is git repository manager.
 type Repo struct {
-	url  string
-	home string
+	url    string
+	home   string
+	branch string
 }
 
 // NewRepo new a repository manager.
-func NewRepo(url string) *Repo {
+func NewRepo(url string, branch string) *Repo {
+	var start int
+	start = strings.Index(url, "//")
+	if start == -1 {
+		start = strings.Index(url, ":") + 1
+	} else {
+		start += 2
+	}
+	end := strings.LastIndex(url, "/")
 	return &Repo{
-		url:  url,
-		home: kratosHomeWithDir("repo"),
+		url:    url,
+		home:   kratosHomeWithDir("repo/" + url[start:end]),
+		branch: branch,
 	}
 }
 
@@ -28,23 +37,27 @@ func NewRepo(url string) *Repo {
 func (r *Repo) Path() string {
 	start := strings.LastIndex(r.url, "/")
 	end := strings.LastIndex(r.url, ".git")
-	return path.Join(r.home, r.url[start+1:end])
+	if end == -1 {
+		end = len(r.url)
+	}
+	branch := ""
+	if r.branch == "" {
+		branch = "@main"
+	} else {
+		branch = "@" + r.branch
+	}
+	return path.Join(r.home, r.url[start+1:end]+branch)
 }
 
-// Pull fetchs the repository from remote url.
-func (r *Repo) Pull(ctx context.Context, url string) error {
-	repo, err := git.PlainOpen(r.Path())
-	if err != nil {
-		return err
-	}
-	w, err := repo.Worktree()
-	if err != nil {
-		return err
-	}
-	if err = w.PullContext(ctx, &git.PullOptions{
-		RemoteName: "origin",
-		Progress:   os.Stdout,
-	}); errors.Is(err, git.NoErrAlreadyUpToDate) {
+// Pull fetch the repository from remote url.
+func (r *Repo) Pull(ctx context.Context) error {
+	cmd := exec.Command("git", "pull")
+	cmd.Dir = r.Path()
+	var out bytes.Buffer
+	cmd.Stderr = &out
+	cmd.Stdout = os.Stdout
+	err := cmd.Run()
+	if strings.Contains(out.String(), "You are not currently on a branch.") {
 		return nil
 	}
 	return err
@@ -53,12 +66,17 @@ func (r *Repo) Pull(ctx context.Context, url string) error {
 // Clone clones the repository to cache path.
 func (r *Repo) Clone(ctx context.Context) error {
 	if _, err := os.Stat(r.Path()); !os.IsNotExist(err) {
-		return r.Pull(ctx, r.url)
+		return r.Pull(ctx)
 	}
-	_, err := git.PlainCloneContext(ctx, r.Path(), false, &git.CloneOptions{
-		URL:      r.url,
-		Progress: os.Stdout,
-	})
+	cmd := &exec.Cmd{}
+	if r.branch == "" {
+		cmd = exec.Command("git", "clone", r.url, r.Path())
+	} else {
+		cmd = exec.Command("git", "clone", "-b", r.branch, r.url, r.Path())
+	}
+	cmd.Stderr = os.Stderr
+	cmd.Stdout = os.Stdout
+	err := cmd.Run()
 	return err
 }
 
