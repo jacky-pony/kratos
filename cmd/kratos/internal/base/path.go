@@ -2,10 +2,15 @@ package base
 
 import (
 	"bytes"
+	"fmt"
 	"io/ioutil"
 	"log"
 	"os"
 	"path"
+	"path/filepath"
+	"strings"
+
+	"github.com/fatih/color"
 )
 
 func kratosHome() string {
@@ -73,10 +78,8 @@ func copyDir(src, dst string, replaces, ignores []string) error {
 		if hasSets(fd.Name(), ignores) {
 			continue
 		}
-
 		srcfp := path.Join(src, fd.Name())
 		dstfp := path.Join(dst, fd.Name())
-
 		if fd.IsDir() {
 			if err = copyDir(srcfp, dstfp, replaces, ignores); err != nil {
 				return err
@@ -97,4 +100,13 @@ func hasSets(name string, sets []string) bool {
 		}
 	}
 	return false
+}
+
+func Tree(path string, dir string) {
+	filepath.Walk(path, func(path string, info os.FileInfo, err error) error {
+		if !info.IsDir() {
+			fmt.Printf("%s %s (%v bytes)\n", color.GreenString("CREATED"), strings.Replace(path, dir+"/", "", -1), info.Size())
+		}
+		return nil
+	})
 }

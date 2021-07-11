@@ -15,16 +15,17 @@ func main() {
 	router.HandleFunc("/home", func(w http.ResponseWriter, req *http.Request) {
 		fmt.Fprint(w, "Hello Gorilla Mux!")
 	}).Methods("GET")
+
 	httpSrv := transhttp.NewServer(transhttp.Address(":8000"))
 	httpSrv.HandlePrefix("/", router)
 
 	app := kratos.New(
-		kratos.Name("gin"),
+		kratos.Name("mux"),
 		kratos.Server(
 			httpSrv,
 		),
 	)
 	if err := app.Run(); err != nil {
-		log.Println(err)
+		log.Fatal(err)
 	}
 }

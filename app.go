@@ -5,22 +5,32 @@ import (
 	"errors"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 
 	"github.com/go-kratos/kratos/v2/log"
 	"github.com/go-kratos/kratos/v2/registry"
+	"github.com/go-kratos/kratos/v2/transport"
 
 	"github.com/google/uuid"
 	"golang.org/x/sync/errgroup"
 )
 
-// App is an application components lifecycle manager
+// AppInfo is application context value.
+type AppInfo interface {
+	ID() string
+	Name() string
+	Version() string
+	Metadata() map[string]string
+	Endpoint() []string
+}
+
+// App is an application components lifecycle manager.
 type App struct {
 	opts     options
 	ctx      context.Context
 	cancel   func()
 	instance *registry.ServiceInstance
-	log      *log.Helper
 }
 
 // New create an application lifecycle manager.
@@ -38,40 +48,58 @@ func New(opts ...Option) *App {
 	}
 	ctx, cancel := context.WithCancel(options.ctx)
 	return &App{
-		opts:     options,
-		ctx:      ctx,
-		cancel:   cancel,
-		instance: buildInstance(options),
-		log:      log.NewHelper("app", options.logger),
+		ctx:    ctx,
+		cancel: cancel,
+		opts:   options,
 	}
 }
 
+// ID returns app instance id.
+func (a *App) ID() string { return a.opts.id }
+
+// Name returns service name.
+func (a *App) Name() string { return a.opts.name }
+
+// Version returns app version.
+func (a *App) Version() string { return a.opts.version }
+
+// Metadata returns service metadata.
+func (a *App) Metadata() map[string]string { return a.opts.metadata }
+
+// Endpoint returns endpoints.
+func (a *App) Endpoint() []string { return a.instance.Endpoints }
+
 // Run executes all OnStart hooks registered with the application's Lifecycle.
 func (a *App) Run() error {
-	a.log.Infow(
-		"service_id", a.opts.id,
-		"service_name", a.opts.name,
-		"version", a.opts.version,
-	)
-	g, ctx := errgroup.WithContext(a.ctx)
+	instance, err := a.buildInstance()
+	if err != nil {
+		return err
+	}
+	ctx := NewContext(a.ctx, a)
+	eg, ctx := errgroup.WithContext(ctx)
+	wg := sync.WaitGroup{}
 	for _, srv := range a.opts.servers {
 		srv := srv
-		g.Go(func() error {
+		eg.Go(func() error {
 			<-ctx.Done() // wait for stop signal
-			return srv.Stop()
+			return srv.Stop(ctx)
 		})
-		g.Go(func() error {
-			return srv.Start()
+		wg.Add(1)
+		eg.Go(func() error {
+			wg.Done()
+			return srv.Start(ctx)
 		})
 	}
+	wg.Wait()
 	if a.opts.registrar != nil {
-		if err := a.opts.registrar.Register(a.opts.ctx, a.instance); err != nil {
+		if err := a.opts.registrar.Register(a.opts.ctx, instance); err != nil {
 			return err
 		}
+		a.instance = instance
 	}
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, a.opts.sigs...)
-	g.Go(func() error {
+	eg.Go(func() error {
 		for {
 			select {
 			case <-ctx.Done():
@@ -81,7 +109,7 @@ func (a *App) Run() error {
 			}
 		}
 	})
-	if err := g.Wait(); err != nil && !errors.Is(err, context.Canceled) {
+	if err := eg.Wait(); err != nil && !errors.Is(err, context.Canceled) {
 		return err
 	}
 	return nil
@@ -89,7 +117,7 @@ func (a *App) Run() error {
 
 // Stop gracefully stops the application.
 func (a *App) Stop() error {
-	if a.opts.registrar != nil {
+	if a.opts.registrar != nil && a.instance != nil {
 		if err := a.opts.registrar.Deregister(a.opts.ctx, a.instance); err != nil {
 			return err
 		}
@@ -100,19 +128,40 @@ func (a *App) Stop() error {
 	return nil
 }
 
-func buildInstance(o options) *registry.ServiceInstance {
-	if len(o.endpoints) == 0 {
-		for _, srv := range o.servers {
-			if e, err := srv.Endpoint(); err == nil {
-				o.endpoints = append(o.endpoints, e)
+func (a *App) buildInstance() (*registry.ServiceInstance, error) {
+	var endpoints []string
+	for _, e := range a.opts.endpoints {
+		endpoints = append(endpoints, e.String())
+	}
+	if len(endpoints) == 0 {
+		for _, srv := range a.opts.servers {
+			if r, ok := srv.(transport.Endpointer); ok {
+				e, err := r.Endpoint()
+				if err != nil {
+					return nil, err
+				}
+				endpoints = append(endpoints, e.String())
 			}
 		}
 	}
 	return &registry.ServiceInstance{
-		ID:        o.id,
-		Name:      o.name,
-		Version:   o.version,
-		Metadata:  o.metadata,
-		Endpoints: o.endpoints,
-	}
+		ID:        a.opts.id,
+		Name:      a.opts.name,
+		Version:   a.opts.version,
+		Metadata:  a.opts.metadata,
+		Endpoints: endpoints,
+	}, nil
+}
+
+type appKey struct{}
+
+// NewContext returns a new Context that carries value.
+func NewContext(ctx context.Context, s AppInfo) context.Context {
+	return context.WithValue(ctx, appKey{}, s)
+}
+
+// FromContext returns the Transport value stored in ctx, if any.
+func FromContext(ctx context.Context) (s AppInfo, ok bool) {
+	s, ok = ctx.Value(appKey{}).(AppInfo)
+	return
 }

@@ -43,38 +43,19 @@ func (r *reader) Merge(kvs ...*KeyValue) error {
 			return err
 		}
 	}
+	if err := r.opts.resolver(merged); err != nil {
+		return err
+	}
 	r.values = merged
 	return nil
 }
 
 func (r *reader) Value(path string) (Value, bool) {
-	var (
-		next = r.values
-		keys = strings.Split(path, ".")
-		last = len(keys) - 1
-	)
-	for idx, key := range keys {
-		value, ok := next[key]
-		if !ok {
-			return nil, false
-		}
-		if idx == last {
-			av := &atomicValue{}
-			av.Store(value)
-			return av, true
-		}
-		switch vm := value.(type) {
-		case map[string]interface{}:
-			next = vm
-		default:
-			return nil, false
-		}
-	}
-	return nil, false
+	return readValue(r.values, path)
 }
 
 func (r *reader) Source() ([]byte, error) {
-	return marshalJSON(r.values)
+	return marshalJSON(convertMap(r.values))
 }
 
 func cloneMap(src map[string]interface{}) (map[string]interface{}, error) {
@@ -103,9 +84,43 @@ func convertMap(src interface{}) interface{} {
 			dst[fmt.Sprint(k)] = convertMap(v)
 		}
 		return dst
+	case []interface{}:
+		dst := make([]interface{}, len(m))
+		for k, v := range m {
+			dst[k] = convertMap(v)
+		}
+		return dst
 	default:
 		return src
 	}
+}
+
+// readValue read Value in given map[string]interface{}
+// by the given path, will return false if not found.
+func readValue(values map[string]interface{}, path string) (Value, bool) {
+	var (
+		next = values
+		keys = strings.Split(path, ".")
+		last = len(keys) - 1
+	)
+	for idx, key := range keys {
+		value, ok := next[key]
+		if !ok {
+			return nil, false
+		}
+		if idx == last {
+			av := &atomicValue{}
+			av.Store(value)
+			return av, true
+		}
+		switch vm := value.(type) {
+		case map[string]interface{}:
+			next = vm
+		default:
+			return nil, false
+		}
+	}
+	return nil, false
 }
 
 func marshalJSON(v interface{}) ([]byte, error) {
