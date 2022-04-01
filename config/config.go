@@ -1,6 +1,7 @@
 package config
 
 import (
+	"context"
 	"errors"
 	"reflect"
 	"sync"
@@ -47,37 +48,45 @@ type config struct {
 
 // New new a config with options.
 func New(opts ...Option) Config {
-	options := options{
-		logger:   log.DefaultLogger,
+	o := options{
+		logger:   log.GetLogger(),
 		decoder:  defaultDecoder,
 		resolver: defaultResolver,
 	}
-	for _, o := range opts {
-		o(&options)
+	for _, opt := range opts {
+		opt(&o)
 	}
 	return &config{
-		opts:   options,
-		reader: newReader(options),
-		log:    log.NewHelper(options.logger),
+		opts:   o,
+		reader: newReader(o),
+		log:    log.NewHelper(o.logger),
 	}
 }
 
 func (c *config) watch(w Watcher) {
 	for {
 		kvs, err := w.Next()
+		if errors.Is(err, context.Canceled) {
+			c.log.Infof("watcher's ctx cancel : %v", err)
+			return
+		}
 		if err != nil {
 			time.Sleep(time.Second)
-			c.log.Errorf("Failed to watch next config: %v", err)
+			c.log.Errorf("failed to watch next config: %v", err)
 			continue
 		}
 		if err := c.reader.Merge(kvs...); err != nil {
-			c.log.Errorf("Failed to merge next config: %v", err)
+			c.log.Errorf("failed to merge next config: %v", err)
+			continue
+		}
+		if err := c.reader.Resolve(); err != nil {
+			c.log.Errorf("failed to resolve next config: %v", err)
 			continue
 		}
 		c.cached.Range(func(key, value interface{}) bool {
 			k := key.(string)
 			v := value.(Value)
-			if n, ok := c.reader.Value(k); ok && !reflect.DeepEqual(n.Load(), v.Load()) {
+			if n, ok := c.reader.Value(k); ok && reflect.TypeOf(n.Load()) == reflect.TypeOf(v.Load()) && !reflect.DeepEqual(n.Load(), v.Load()) {
 				v.Store(n.Load())
 				if o, ok := c.observers.Load(k); ok {
 					o.(Observer)(k, v)
@@ -94,16 +103,24 @@ func (c *config) Load() error {
 		if err != nil {
 			return err
 		}
-		if err := c.reader.Merge(kvs...); err != nil {
-			c.log.Errorf("Failed to merge config source: %v", err)
+		for _, v := range kvs {
+			c.log.Debugf("config loaded: %s format: %s", v.Key, v.Format)
+		}
+		if err = c.reader.Merge(kvs...); err != nil {
+			c.log.Errorf("failed to merge config source: %v", err)
 			return err
 		}
 		w, err := src.Watch()
 		if err != nil {
-			c.log.Errorf("Failed to watch config source: %v", err)
+			c.log.Errorf("failed to watch config source: %v", err)
 			return err
 		}
+		c.watchers = append(c.watchers, w)
 		go c.watch(w)
+	}
+	if err := c.reader.Resolve(); err != nil {
+		c.log.Errorf("failed to resolve config source: %v", err)
+		return err
 	}
 	return nil
 }

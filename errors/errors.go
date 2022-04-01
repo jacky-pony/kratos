@@ -4,7 +4,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/go-kratos/kratos/v2/internal/httputil"
+	httpstatus "github.com/go-kratos/kratos/v2/transport/http/status"
 	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
@@ -27,7 +27,7 @@ func (e *Error) Error() string {
 
 // GRPCStatus returns the Status represented by se.
 func (e *Error) GRPCStatus() *status.Status {
-	s, _ := status.New(httputil.GRPCCodeFromStatus(int(e.Code)), e.Message).
+	s, _ := status.New(httpstatus.ToGRPCCode(int(e.Code)), e.Message).
 		WithDetails(&errdetails.ErrorInfo{
 			Reason:   e.Reason,
 			Metadata: e.Metadata,
@@ -38,7 +38,7 @@ func (e *Error) GRPCStatus() *status.Status {
 // Is matches each error in the chain with the target value.
 func (e *Error) Is(err error) bool {
 	if se := new(Error); errors.As(err, &se) {
-		return se.Reason == e.Reason
+		return se.Code == e.Code && se.Reason == e.Reason
 	}
 	return false
 }
@@ -69,25 +69,22 @@ func Errorf(code int, reason, format string, a ...interface{}) error {
 	return New(code, reason, fmt.Sprintf(format, a...))
 }
 
-// Code returns the http code for a error.
+// Code returns the http code for an error.
 // It supports wrapped errors.
 func Code(err error) int {
 	if err == nil {
-		return 200
+		return 200 //nolint:gomnd
 	}
-	if se := FromError(err); err != nil {
-		return int(se.Code)
-	}
-	return UnknownCode
+	return int(FromError(err).Code)
 }
 
 // Reason returns the reason for a particular error.
 // It supports wrapped errors.
 func Reason(err error) string {
-	if se := FromError(err); err != nil {
-		return se.Reason
+	if err == nil {
+		return UnknownReason
 	}
-	return UnknownReason
+	return FromError(err).Reason
 }
 
 // FromError try to convert an error to *Error.
@@ -101,16 +98,19 @@ func FromError(err error) *Error {
 	}
 	gs, ok := status.FromError(err)
 	if ok {
+		ret := New(
+			httpstatus.FromGRPCCode(gs.Code()),
+			UnknownReason,
+			gs.Message(),
+		)
 		for _, detail := range gs.Details() {
 			switch d := detail.(type) {
 			case *errdetails.ErrorInfo:
-				return New(
-					httputil.StatusFromGRPCCode(gs.Code()),
-					d.Reason,
-					gs.Message(),
-				).WithMetadata(d.Metadata)
+				ret.Reason = d.Reason
+				return ret.WithMetadata(d.Metadata)
 			}
 		}
+		return ret
 	}
 	return New(UnknownCode, UnknownReason, err.Error())
 }

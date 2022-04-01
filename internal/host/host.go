@@ -8,14 +8,12 @@ import (
 
 // ExtractHostPort from address
 func ExtractHostPort(addr string) (host string, port uint64, err error) {
-	var (
-		ports string
-	)
+	var ports string
 	host, ports, err = net.SplitHostPort(addr)
 	if err != nil {
 		return
 	}
-	port, err = strconv.ParseUint(ports, 10, 16)
+	port, err = strconv.ParseUint(ports, 10, 16) //nolint:gomnd
 	if err != nil {
 		return
 	}
@@ -38,7 +36,7 @@ func Port(lis net.Listener) (int, bool) {
 // Extract returns a private addr and port.
 func Extract(hostPort string, lis net.Listener) (string, error) {
 	addr, port, err := net.SplitHostPort(hostPort)
-	if err != nil {
+	if err != nil && lis == nil {
 		return "", err
 	}
 	if lis != nil {
@@ -55,7 +53,17 @@ func Extract(hostPort string, lis net.Listener) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	lowest := int(^uint(0) >> 1)
+	var result net.IP
 	for _, iface := range ifaces {
+		if (iface.Flags & net.FlagUp) == 0 {
+			continue
+		}
+		if iface.Index < lowest || result == nil {
+			lowest = iface.Index
+		} else if result != nil {
+			continue
+		}
 		addrs, err := iface.Addrs()
 		if err != nil {
 			continue
@@ -71,9 +79,12 @@ func Extract(hostPort string, lis net.Listener) (string, error) {
 				continue
 			}
 			if isValidIP(ip.String()) {
-				return net.JoinHostPort(ip.String(), port), nil
+				result = ip
 			}
 		}
+	}
+	if result != nil {
+		return net.JoinHostPort(result.String(), port), nil
 	}
 	return "", nil
 }

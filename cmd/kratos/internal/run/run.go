@@ -2,7 +2,6 @@ package run
 
 import (
 	"fmt"
-	"io/ioutil"
 	"os"
 	"os/exec"
 	"path"
@@ -16,8 +15,8 @@ import (
 // CmdRun run project command.
 var CmdRun = &cobra.Command{
 	Use:   "run",
-	Short: "run project",
-	Long:  "run project. Example: kratos run",
+	Short: "Run project",
+	Long:  "Run project. Example: kratos run",
 	Run:   Run,
 }
 
@@ -34,7 +33,7 @@ func Run(cmd *cobra.Command, args []string) {
 	}
 	if dir == "" {
 		// find the directory containing the cmd/*
-		cmdDir, cmdPath, err := findCMD(base)
+		cmdPath, err := findCMD(base)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "\033[31mERROR: %s\033[m\n", err)
 			return
@@ -43,17 +42,23 @@ func Run(cmd *cobra.Command, args []string) {
 			fmt.Fprintf(os.Stderr, "\033[31mERROR: %s\033[m\n", "The cmd directory cannot be found in the current directory")
 			return
 		} else if len(cmdPath) == 1 {
-			dir = path.Join(cmdDir, cmdPath[0])
+			for k, v := range cmdPath {
+				dir = path.Join(v, k)
+			}
 		} else {
+			var cmdPaths []string
+			for k := range cmdPath {
+				cmdPaths = append(cmdPaths, k)
+			}
 			prompt := &survey.Select{
 				Message: "Which directory do you want to run?",
-				Options: cmdPath,
+				Options: cmdPaths,
 			}
-			survey.AskOne(prompt, &dir)
-			if dir == "" {
+			e := survey.AskOne(prompt, &dir)
+			if e != nil || dir == "" {
 				return
 			}
-			dir = path.Join(cmdDir, dir)
+			dir = path.Join(cmdPath[dir], dir)
 		}
 	}
 	fd := exec.Command("go", "run", ".")
@@ -64,29 +69,24 @@ func Run(cmd *cobra.Command, args []string) {
 		fmt.Fprintf(os.Stderr, "\033[31mERROR: %s\033[m\n", err.Error())
 		return
 	}
-	return
 }
 
-func findCMD(base string) (string, []string, error) {
+func findCMD(base string) (map[string]string, error) {
 	var root bool
-	next := func(dir string) (string, []string, error) {
-		var (
-			cmdDir  string
-			cmdPath []string
-		)
+	next := func(dir string) (map[string]string, error) {
+		cmdPath := make(map[string]string)
 		err := filepath.Walk(dir, func(walkPath string, info os.FileInfo, err error) error {
-			// multi level directory is not allowed under the cmd directory, so it is judged that the path ends with cmd.
+			// multi level directory is not allowed under the cmdPath directory, so it is judged that the path ends with cmdPath.
 			if strings.HasSuffix(walkPath, "cmd") {
-				paths, err := ioutil.ReadDir(walkPath)
+				paths, err := os.ReadDir(walkPath)
 				if err != nil {
 					return err
 				}
 				for _, fileInfo := range paths {
 					if fileInfo.IsDir() {
-						cmdPath = append(cmdPath, path.Join("cmd", fileInfo.Name()))
+						cmdPath[path.Join("cmd", fileInfo.Name())] = filepath.Join(walkPath, "..")
 					}
 				}
-				cmdDir = filepath.Join(walkPath, "..")
 				return nil
 			}
 			if info.Name() == "go.mod" {
@@ -94,20 +94,21 @@ func findCMD(base string) (string, []string, error) {
 			}
 			return nil
 		})
-		return cmdDir, cmdPath, err
+		return cmdPath, err
 	}
 	for i := 0; i < 5; i++ {
-		cmdDir, res, err := next(base)
+		tmp := base
+		cmd, err := next(tmp)
 		if err != nil {
-			return "", nil, err
+			return nil, err
 		}
-		if len(res) > 0 {
-			return cmdDir, res, nil
+		if len(cmd) > 0 {
+			return cmd, nil
 		}
 		if root {
 			break
 		}
-		base = filepath.Join(base, "..")
+		_ = filepath.Join(base, "..")
 	}
-	return "", []string{base}, nil
+	return map[string]string{"": base}, nil
 }

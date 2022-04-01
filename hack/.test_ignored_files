@@ -1,0 +1,10 @@
+./examples
+./cmd/protoc-gen-go-errors
+./cmd/protoc-gen-go-http
+./cmd/kratos
+./contrib/config/kubernetes
+./contrib/registry/kubernetes
+./contrib/registry/zookeeper
+./contrib/registry/etcd
+./contrib/registry/consul
+./contrib/registry/eureka

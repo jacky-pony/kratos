@@ -1,6 +1,8 @@
 package http
 
-import "net/http"
+import (
+	"net/http"
+)
 
 // CallOption configures a Call before it starts or extracts information from
 // a Call after it completes.
@@ -94,7 +96,7 @@ func Header(header *http.Header) CallOption {
 	return HeaderCallOption{header: header}
 }
 
-// HeaderCallOption is retrive response header for client call
+// HeaderCallOption is retrieve response header for client call
 type HeaderCallOption struct {
 	EmptyCallOption
 	header *http.Header

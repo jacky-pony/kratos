@@ -1,8 +1,9 @@
 package base
 
 import (
-	"bytes"
 	"context"
+	"fmt"
+	stdurl "net/url"
 	"os"
 	"os/exec"
 	"path"
@@ -16,8 +17,19 @@ type Repo struct {
 	branch string
 }
 
-// NewRepo new a repository manager.
-func NewRepo(url string, branch string) *Repo {
+func repoDir(url string) string {
+	if !strings.Contains(url, "//") {
+		url = "//" + url
+	}
+	if strings.HasPrefix(url, "//git@") {
+		url = "ssh:" + url
+	} else if strings.HasPrefix(url, "//") {
+		url = "https:" + url
+	}
+	u, err := stdurl.Parse(url)
+	if err == nil {
+		url = fmt.Sprintf("%s://%s%s", u.Scheme, u.Hostname(), u.Path)
+	}
 	var start int
 	start = strings.Index(url, "//")
 	if start == -1 {
@@ -26,9 +38,14 @@ func NewRepo(url string, branch string) *Repo {
 		start += 2
 	}
 	end := strings.LastIndex(url, "/")
+	return url[start:end]
+}
+
+// NewRepo new a repository manager.
+func NewRepo(url string, branch string) *Repo {
 	return &Repo{
 		url:    url,
-		home:   kratosHomeWithDir("repo/" + url[start:end]),
+		home:   kratosHomeWithDir("repo/" + repoDir(url)),
 		branch: branch,
 	}
 }
@@ -40,7 +57,7 @@ func (r *Repo) Path() string {
 	if end == -1 {
 		end = len(r.url)
 	}
-	branch := ""
+	var branch string
 	if r.branch == "" {
 		branch = "@main"
 	} else {
@@ -51,15 +68,19 @@ func (r *Repo) Path() string {
 
 // Pull fetch the repository from remote url.
 func (r *Repo) Pull(ctx context.Context) error {
-	cmd := exec.Command("git", "pull")
+	cmd := exec.CommandContext(ctx, "git", "symbolic-ref", "HEAD")
 	cmd.Dir = r.Path()
-	var out bytes.Buffer
-	cmd.Stderr = &out
-	cmd.Stdout = os.Stdout
-	err := cmd.Run()
-	if strings.Contains(out.String(), "You are not currently on a branch.") {
+	_, err := cmd.CombinedOutput()
+	if err != nil {
 		return nil
 	}
+	cmd = exec.CommandContext(ctx, "git", "pull")
+	cmd.Dir = r.Path()
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return err
+	}
+	fmt.Println(string(out))
 	return err
 }
 
@@ -68,16 +89,18 @@ func (r *Repo) Clone(ctx context.Context) error {
 	if _, err := os.Stat(r.Path()); !os.IsNotExist(err) {
 		return r.Pull(ctx)
 	}
-	cmd := &exec.Cmd{}
+	var cmd *exec.Cmd
 	if r.branch == "" {
-		cmd = exec.Command("git", "clone", r.url, r.Path())
+		cmd = exec.CommandContext(ctx, "git", "clone", r.url, r.Path())
 	} else {
-		cmd = exec.Command("git", "clone", "-b", r.branch, r.url, r.Path())
+		cmd = exec.CommandContext(ctx, "git", "clone", "-b", r.branch, r.url, r.Path())
 	}
-	cmd.Stderr = os.Stderr
-	cmd.Stdout = os.Stdout
-	err := cmd.Run()
-	return err
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return err
+	}
+	fmt.Println(string(out))
+	return nil
 }
 
 // CopyTo copies the repository to project path.

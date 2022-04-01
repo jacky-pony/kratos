@@ -2,27 +2,32 @@ package grpc
 
 import (
 	"context"
+	"crypto/tls"
 	"net"
 	"net/url"
-	"sync"
 	"time"
 
+	"github.com/go-kratos/kratos/v2/internal/endpoint"
+
 	apimd "github.com/go-kratos/kratos/v2/api/metadata"
-	ic "github.com/go-kratos/kratos/v2/internal/context"
+
 	"github.com/go-kratos/kratos/v2/internal/host"
 	"github.com/go-kratos/kratos/v2/log"
 	"github.com/go-kratos/kratos/v2/middleware"
 	"github.com/go-kratos/kratos/v2/transport"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/health"
 	"google.golang.org/grpc/health/grpc_health_v1"
-	grpcmd "google.golang.org/grpc/metadata"
+
 	"google.golang.org/grpc/reflection"
 )
 
-var _ transport.Server = (*Server)(nil)
-var _ transport.Endpointer = (*Server)(nil)
+var (
+	_ transport.Server     = (*Server)(nil)
+	_ transport.Endpointer = (*Server)(nil)
+)
 
 // ServerOption is gRPC server option.
 type ServerOption func(o *Server)
@@ -62,10 +67,31 @@ func Middleware(m ...middleware.Middleware) ServerOption {
 	}
 }
 
+// TLSConfig with TLS config.
+func TLSConfig(c *tls.Config) ServerOption {
+	return func(s *Server) {
+		s.tlsConf = c
+	}
+}
+
+// Listener with server lis
+func Listener(lis net.Listener) ServerOption {
+	return func(s *Server) {
+		s.lis = lis
+	}
+}
+
 // UnaryInterceptor returns a ServerOption that sets the UnaryServerInterceptor for the server.
 func UnaryInterceptor(in ...grpc.UnaryServerInterceptor) ServerOption {
 	return func(s *Server) {
-		s.ints = in
+		s.unaryInts = in
+	}
+}
+
+// StreamInterceptor returns a ServerOption that sets the StreamServerInterceptor for the server.
+func StreamInterceptor(in ...grpc.StreamServerInterceptor) ServerOption {
+	return func(s *Server) {
+		s.streamInts = in
 	}
 }
 
@@ -79,9 +105,9 @@ func Options(opts ...grpc.ServerOption) ServerOption {
 // Server is a gRPC server wrapper.
 type Server struct {
 	*grpc.Server
-	ctx        context.Context
+	baseCtx    context.Context
+	tlsConf    *tls.Config
 	lis        net.Listener
-	once       sync.Once
 	err        error
 	network    string
 	address    string
@@ -89,7 +115,8 @@ type Server struct {
 	timeout    time.Duration
 	log        *log.Helper
 	middleware []middleware.Middleware
-	ints       []grpc.UnaryServerInterceptor
+	unaryInts  []grpc.UnaryServerInterceptor
+	streamInts []grpc.StreamServerInterceptor
 	grpcOpts   []grpc.ServerOption
 	health     *health.Server
 	metadata   *apimd.Server
@@ -98,29 +125,42 @@ type Server struct {
 // NewServer creates a gRPC server by options.
 func NewServer(opts ...ServerOption) *Server {
 	srv := &Server{
+		baseCtx: context.Background(),
 		network: "tcp",
 		address: ":0",
 		timeout: 1 * time.Second,
 		health:  health.NewServer(),
-		log:     log.NewHelper(log.DefaultLogger),
+		log:     log.NewHelper(log.GetLogger()),
 	}
 	for _, o := range opts {
 		o(srv)
 	}
-	var ints = []grpc.UnaryServerInterceptor{
+	unaryInts := []grpc.UnaryServerInterceptor{
 		srv.unaryServerInterceptor(),
 	}
-	if len(srv.ints) > 0 {
-		ints = append(ints, srv.ints...)
+	streamInts := []grpc.StreamServerInterceptor{
+		srv.streamServerInterceptor(),
 	}
-	var grpcOpts = []grpc.ServerOption{
-		grpc.ChainUnaryInterceptor(ints...),
+	if len(srv.unaryInts) > 0 {
+		unaryInts = append(unaryInts, srv.unaryInts...)
+	}
+	if len(srv.streamInts) > 0 {
+		streamInts = append(streamInts, srv.streamInts...)
+	}
+	grpcOpts := []grpc.ServerOption{
+		grpc.ChainUnaryInterceptor(unaryInts...),
+		grpc.ChainStreamInterceptor(streamInts...),
+	}
+	if srv.tlsConf != nil {
+		grpcOpts = append(grpcOpts, grpc.Creds(credentials.NewTLS(srv.tlsConf)))
 	}
 	if len(srv.grpcOpts) > 0 {
 		grpcOpts = append(grpcOpts, srv.grpcOpts...)
 	}
 	srv.Server = grpc.NewServer(grpcOpts...)
 	srv.metadata = apimd.NewServer(srv.Server)
+	// listen and endpoint
+	srv.err = srv.listenAndEndpoint()
 	// internal register
 	grpc_health_v1.RegisterHealthServer(srv.Server, srv.health)
 	apimd.RegisterMetadataServer(srv.Server, srv.metadata)
@@ -132,21 +172,6 @@ func NewServer(opts ...ServerOption) *Server {
 // examples:
 //   grpc://127.0.0.1:9000?isSecure=false
 func (s *Server) Endpoint() (*url.URL, error) {
-	s.once.Do(func() {
-		lis, err := net.Listen(s.network, s.address)
-		if err != nil {
-			s.err = err
-			return
-		}
-		addr, err := host.Extract(s.address, lis)
-		if err != nil {
-			lis.Close()
-			s.err = err
-			return
-		}
-		s.lis = lis
-		s.endpoint = &url.URL{Scheme: "grpc", Host: addr}
-	})
 	if s.err != nil {
 		return nil, s.err
 	}
@@ -155,10 +180,10 @@ func (s *Server) Endpoint() (*url.URL, error) {
 
 // Start start the gRPC server.
 func (s *Server) Start(ctx context.Context) error {
-	if _, err := s.Endpoint(); err != nil {
-		return err
+	if s.err != nil {
+		return s.err
 	}
-	s.ctx = ctx
+	s.baseCtx = ctx
 	s.log.Infof("[gRPC] server listening on: %s", s.lis.Addr().String())
 	s.health.Resume()
 	return s.Serve(s.lis)
@@ -166,38 +191,25 @@ func (s *Server) Start(ctx context.Context) error {
 
 // Stop stop the gRPC server.
 func (s *Server) Stop(ctx context.Context) error {
-	s.GracefulStop()
 	s.health.Shutdown()
+	s.GracefulStop()
 	s.log.Info("[gRPC] server stopping")
 	return nil
 }
 
-func (s *Server) unaryServerInterceptor() grpc.UnaryServerInterceptor {
-	return func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
-		ctx, cancel := ic.Merge(ctx, s.ctx)
-		defer cancel()
-		md, _ := grpcmd.FromIncomingContext(ctx)
-		replyHeader := grpcmd.MD{}
-		ctx = transport.NewServerContext(ctx, &Transport{
-			endpoint:    s.endpoint.String(),
-			operation:   info.FullMethod,
-			reqHeader:   headerCarrier(md),
-			replyHeader: headerCarrier(replyHeader),
-		})
-		if s.timeout > 0 {
-			ctx, cancel = context.WithTimeout(ctx, s.timeout)
-			defer cancel()
+func (s *Server) listenAndEndpoint() error {
+	if s.lis == nil {
+		lis, err := net.Listen(s.network, s.address)
+		if err != nil {
+			return err
 		}
-		h := func(ctx context.Context, req interface{}) (interface{}, error) {
-			return handler(ctx, req)
-		}
-		if len(s.middleware) > 0 {
-			h = middleware.Chain(s.middleware...)(h)
-		}
-		reply, err := h(ctx, req)
-		if len(replyHeader) > 0 {
-			grpc.SetHeader(ctx, replyHeader)
-		}
-		return reply, err
+		s.lis = lis
 	}
+	addr, err := host.Extract(s.address, s.lis)
+	if err != nil {
+		_ = s.lis.Close()
+		return err
+	}
+	s.endpoint = endpoint.NewEndpoint("grpc", addr, s.tlsConf != nil)
+	return nil
 }

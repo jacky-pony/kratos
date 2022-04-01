@@ -8,20 +8,17 @@ import (
 	"google.golang.org/protobuf/types/pluginpb"
 )
 
-const version = "v2.0.0"
+var (
+	showVersion = flag.Bool("version", false, "print the version and exit")
+	omitempty   = flag.Bool("omitempty", true, "omit if google.api is empty")
+)
 
 func main() {
-	showVersion := flag.Bool("version", false, "print the version and exit")
-	omitempty := flag.Bool("omitempty", true, "omit if google.api is empty")
-
 	flag.Parse()
 	if *showVersion {
-		fmt.Printf("protoc-gen-go-http %v\n", version)
+		fmt.Printf("protoc-gen-go-http %v\n", release)
 		return
 	}
-
-	//var flags flag.FlagSet
-
 	protogen.Options{
 		ParamFunc: flag.CommandLine.Set,
 	}.Run(func(gen *protogen.Plugin) error {

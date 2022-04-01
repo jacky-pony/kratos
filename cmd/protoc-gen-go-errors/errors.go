@@ -14,7 +14,7 @@ const (
 	fmtPackage    = protogen.GoImportPath("fmt")
 )
 
-// generateFile generates a _http.pb.go file containing kratos errors definitions.
+// generateFile generates a _errors.pb.go file containing kratos errors definitions.
 func generateFile(gen *protogen.Plugin, file *protogen.File) *protogen.GeneratedFile {
 	if len(file.Enums) == 0 {
 		return nil
@@ -43,7 +43,7 @@ func generateFileContent(gen *protogen.Plugin, file *protogen.File, g *protogen.
 	index := 0
 	for _, enum := range file.Enums {
 		skip := genErrorsReason(gen, file, g, enum)
-		if skip == false {
+		if !skip {
 			index++
 		}
 	}
@@ -70,7 +70,7 @@ func genErrorsReason(gen *protogen.Plugin, file *protogen.File, g *protogen.Gene
 			enumCode = int(ok)
 		}
 		// If the current enumeration does not contain 'errors.code'
-		//or the code value exceeds the range, the current enum will be skipped
+		// or the code value exceeds the range, the current enum will be skipped
 		if enumCode > 600 || enumCode < 0 {
 			panic(fmt.Sprintf("Enum '%s' range must be greater than 0 and less than or equal to 600", string(v.Desc.Name())))
 		}
@@ -80,8 +80,8 @@ func genErrorsReason(gen *protogen.Plugin, file *protogen.File, g *protogen.Gene
 		err := &errorInfo{
 			Name:       string(enum.Desc.Name()),
 			Value:      string(v.Desc.Name()),
-			CamelValue: Case2Camel(string(v.Desc.Name())),
-			HttpCode:   enumCode,
+			CamelValue: case2Camel(string(v.Desc.Name())),
+			HTTPCode:   enumCode,
 		}
 		ew.Errors = append(ew.Errors, err)
 	}
@@ -92,9 +92,13 @@ func genErrorsReason(gen *protogen.Plugin, file *protogen.File, g *protogen.Gene
 	return false
 }
 
-func Case2Camel(name string) string {
+func case2Camel(name string) string {
 	if !strings.Contains(name, "_") {
-		return name
+		upperName := strings.ToUpper(name)
+		if upperName == name {
+			name = strings.ToLower(name)
+		}
+		return strings.Title(name)
 	}
 	name = strings.ToLower(name)
 	name = strings.Replace(name, "_", " ", -1)

@@ -1,5 +1,5 @@
 module github.com/go-kratos/kratos/cmd/protoc-gen-go-errors/v2
 
-go 1.15
+go 1.16
 
-require google.golang.org/protobuf v1.26.0
+require google.golang.org/protobuf v1.27.1

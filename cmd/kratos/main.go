@@ -8,20 +8,16 @@ import (
 	"github.com/go-kratos/kratos/cmd/kratos/v2/internal/proto"
 	"github.com/go-kratos/kratos/cmd/kratos/v2/internal/run"
 	"github.com/go-kratos/kratos/cmd/kratos/v2/internal/upgrade"
+
 	"github.com/spf13/cobra"
 )
 
-var (
-
-	version string = "v2.0.0"
-
-	rootCmd = &cobra.Command{
-		Use:     "kratos",
-		Short:   "Kratos: An elegant toolkit for Go microservices.",
-		Long:    `Kratos: An elegant toolkit for Go microservices.`,
-		Version: version,
-	}
-)
+var rootCmd = &cobra.Command{
+	Use:     "kratos",
+	Short:   "Kratos: An elegant toolkit for Go microservices.",
+	Long:    `Kratos: An elegant toolkit for Go microservices.`,
+	Version: release,
+}
 
 func init() {
 	rootCmd.AddCommand(project.CmdNew)

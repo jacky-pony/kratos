@@ -7,6 +7,7 @@ import (
 	"os/signal"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/go-kratos/kratos/v2/log"
 	"github.com/go-kratos/kratos/v2/registry"
@@ -30,27 +31,30 @@ type App struct {
 	opts     options
 	ctx      context.Context
 	cancel   func()
+	lk       sync.Mutex
 	instance *registry.ServiceInstance
 }
 
 // New create an application lifecycle manager.
 func New(opts ...Option) *App {
-	options := options{
-		ctx:    context.Background(),
-		logger: log.DefaultLogger,
-		sigs:   []os.Signal{syscall.SIGTERM, syscall.SIGQUIT, syscall.SIGINT},
+	o := options{
+		ctx:              context.Background(),
+		logger:           log.NewHelper(log.GetLogger()),
+		sigs:             []os.Signal{syscall.SIGTERM, syscall.SIGQUIT, syscall.SIGINT},
+		registrarTimeout: 10 * time.Second,
+		stopTimeout:      10 * time.Second,
 	}
 	if id, err := uuid.NewUUID(); err == nil {
-		options.id = id.String()
+		o.id = id.String()
 	}
-	for _, o := range opts {
-		o(&options)
+	for _, opt := range opts {
+		opt(&o)
 	}
-	ctx, cancel := context.WithCancel(options.ctx)
+	ctx, cancel := context.WithCancel(o.ctx)
 	return &App{
 		ctx:    ctx,
 		cancel: cancel,
-		opts:   options,
+		opts:   o,
 	}
 }
 
@@ -67,7 +71,12 @@ func (a *App) Version() string { return a.opts.version }
 func (a *App) Metadata() map[string]string { return a.opts.metadata }
 
 // Endpoint returns endpoints.
-func (a *App) Endpoint() []string { return a.instance.Endpoints }
+func (a *App) Endpoint() []string {
+	if a.instance == nil {
+		return []string{}
+	}
+	return a.instance.Endpoints
+}
 
 // Run executes all OnStart hooks registered with the application's Lifecycle.
 func (a *App) Run() error {
@@ -75,27 +84,32 @@ func (a *App) Run() error {
 	if err != nil {
 		return err
 	}
-	ctx := NewContext(a.ctx, a)
-	eg, ctx := errgroup.WithContext(ctx)
+	eg, ctx := errgroup.WithContext(NewContext(a.ctx, a))
 	wg := sync.WaitGroup{}
 	for _, srv := range a.opts.servers {
 		srv := srv
 		eg.Go(func() error {
 			<-ctx.Done() // wait for stop signal
-			return srv.Stop(ctx)
+			stopCtx, cancel := context.WithTimeout(NewContext(a.opts.ctx, a), a.opts.stopTimeout)
+			defer cancel()
+			return srv.Stop(stopCtx)
 		})
 		wg.Add(1)
 		eg.Go(func() error {
 			wg.Done()
-			return srv.Start(ctx)
+			return srv.Start(NewContext(a.opts.ctx, a))
 		})
 	}
 	wg.Wait()
 	if a.opts.registrar != nil {
-		if err := a.opts.registrar.Register(a.opts.ctx, instance); err != nil {
+		rctx, rcancel := context.WithTimeout(ctx, a.opts.registrarTimeout)
+		defer rcancel()
+		if err := a.opts.registrar.Register(rctx, instance); err != nil {
 			return err
 		}
+		a.lk.Lock()
 		a.instance = instance
+		a.lk.Unlock()
 	}
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, a.opts.sigs...)
@@ -105,7 +119,10 @@ func (a *App) Run() error {
 			case <-ctx.Done():
 				return ctx.Err()
 			case <-c:
-				a.Stop()
+				if err := a.Stop(); err != nil {
+					a.opts.logger.Errorf("failed to stop app: %v", err)
+					return err
+				}
 			}
 		}
 	})
@@ -117,8 +134,13 @@ func (a *App) Run() error {
 
 // Stop gracefully stops the application.
 func (a *App) Stop() error {
-	if a.opts.registrar != nil && a.instance != nil {
-		if err := a.opts.registrar.Deregister(a.opts.ctx, a.instance); err != nil {
+	a.lk.Lock()
+	instance := a.instance
+	a.lk.Unlock()
+	if a.opts.registrar != nil && instance != nil {
+		ctx, cancel := context.WithTimeout(NewContext(a.ctx, a), a.opts.registrarTimeout)
+		defer cancel()
+		if err := a.opts.registrar.Deregister(ctx, instance); err != nil {
 			return err
 		}
 	}
@@ -129,7 +151,7 @@ func (a *App) Stop() error {
 }
 
 func (a *App) buildInstance() (*registry.ServiceInstance, error) {
-	var endpoints []string
+	endpoints := make([]string, 0, len(a.opts.endpoints))
 	for _, e := range a.opts.endpoints {
 		endpoints = append(endpoints, e.String())
 	}

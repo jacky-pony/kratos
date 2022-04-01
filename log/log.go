@@ -5,10 +5,8 @@ import (
 	"log"
 )
 
-var (
-	// DefaultLogger is default logger.
-	DefaultLogger Logger = NewStdLogger(log.Writer())
-)
+// DefaultLogger is default logger.
+var DefaultLogger = NewStdLogger(log.Writer())
 
 // Logger is a logger interface.
 type Logger interface {

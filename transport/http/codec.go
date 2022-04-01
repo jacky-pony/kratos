@@ -1,7 +1,7 @@
 package http
 
 import (
-	"io/ioutil"
+	"io"
 	"net/http"
 
 	"github.com/go-kratos/kratos/v2/encoding"
@@ -27,9 +27,12 @@ func DefaultRequestDecoder(r *http.Request, v interface{}) error {
 	if !ok {
 		return errors.BadRequest("CODEC", r.Header.Get("Content-Type"))
 	}
-	data, err := ioutil.ReadAll(r.Body)
+	data, err := io.ReadAll(r.Body)
 	if err != nil {
 		return errors.BadRequest("CODEC", err.Error())
+	}
+	if len(data) == 0 {
+		return nil
 	}
 	if err = codec.Unmarshal(data, v); err != nil {
 		return errors.BadRequest("CODEC", err.Error())
@@ -45,7 +48,10 @@ func DefaultResponseEncoder(w http.ResponseWriter, r *http.Request, v interface{
 		return err
 	}
 	w.Header().Set("Content-Type", httputil.ContentType(codec.Name()))
-	w.Write(data)
+	_, err = w.Write(data)
+	if err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -60,7 +66,7 @@ func DefaultErrorEncoder(w http.ResponseWriter, r *http.Request, err error) {
 	}
 	w.Header().Set("Content-Type", httputil.ContentType(codec.Name()))
 	w.WriteHeader(int(se.Code))
-	w.Write(body)
+	_, _ = w.Write(body)
 }
 
 // CodecForRequest get encoding.Codec via http.Request

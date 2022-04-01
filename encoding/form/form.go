@@ -10,8 +10,12 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// Name is form codec name
-const Name = "x-www-form-urlencoded"
+const (
+	// Name is form codec name
+	Name = "x-www-form-urlencoded"
+	// Null value string
+	nullStr = "null"
+)
 
 func init() {
 	decoder := form.NewDecoder()
@@ -30,7 +34,7 @@ func (c codec) Marshal(v interface{}) ([]byte, error) {
 	var vs url.Values
 	var err error
 	if m, ok := v.(proto.Message); ok {
-		vs, err = EncodeMap(m)
+		vs, err = EncodeValues(m)
 		if err != nil {
 			return nil, err
 		}
@@ -62,15 +66,12 @@ func (c codec) Unmarshal(data []byte, v interface{}) error {
 		rv = rv.Elem()
 	}
 	if m, ok := v.(proto.Message); ok {
-		return MapProto(m, vs)
+		return DecodeValues(m, vs)
 	} else if m, ok := reflect.Indirect(reflect.ValueOf(v)).Interface().(proto.Message); ok {
-		return MapProto(m, vs)
+		return DecodeValues(m, vs)
 	}
 
-	if err := c.decoder.Decode(v, vs); err != nil {
-		return err
-	}
-	return nil
+	return c.decoder.Decode(v, vs)
 }
 
 func (codec) Name() string {
